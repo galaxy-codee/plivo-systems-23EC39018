@@ -16,7 +16,8 @@ int main() {
     struct sockaddr_in source_addr{};
     source_addr.sin_family = AF_INET;
     source_addr.sin_port = htons(47010);
-    source_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    // Use INADDR_ANY to ensure WSL binds correctly across interfaces
+    source_addr.sin_addr.s_addr = htonl(INADDR_ANY); 
     if (bind(source_fd, (struct sockaddr *)&source_addr, sizeof(source_addr)) < 0) {
         perror("bind 47010");
         return 1;
@@ -31,6 +32,7 @@ int main() {
 
     unsigned char rx_buf[2048];
     Frame prev_frame{};
+    std::memset(&prev_frame, 0, sizeof(Frame)); // Explicitly zero out memory
     bool has_prev = false;
 
     while (true) {
