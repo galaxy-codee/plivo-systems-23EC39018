@@ -29,7 +29,7 @@ void receiver_loop(int in_fd) {
     unsigned char rx_buf[2048];
     while (true) {
         ssize_t n = recvfrom(in_fd, rx_buf, sizeof(rx_buf), 0, nullptr, nullptr);
-        if (n < 328) continue; // Expecting our redundant 328-byte packet
+        if (n < 328) continue; // Reject any packet that doesn't contain both frames
 
         // Extract Current Frame
         uint32_t curr_seq;
@@ -119,7 +119,8 @@ int main() {
     struct sockaddr_in in_addr{};
     in_addr.sin_family = AF_INET;
     in_addr.sin_port = htons(47002);
-    in_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    // Use INADDR_ANY to ensure WSL binds correctly across interfaces
+    in_addr.sin_addr.s_addr = htonl(INADDR_ANY); 
     if (bind(in_fd, (struct sockaddr *)&in_addr, sizeof(in_addr)) < 0) {
         perror("bind 47002");
         return 1;
