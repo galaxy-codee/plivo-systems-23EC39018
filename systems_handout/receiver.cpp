@@ -13,7 +13,7 @@
 // Environment settings populated by the harness
 double T0 = 0.0;
 int DURATION_S = 0;
-int DELAY_MS = 0;
+int DELAY_MS = 60; // Default to 60ms if not set
 
 // Thread-safe Frame Storage
 struct Frame {
@@ -23,6 +23,23 @@ struct Frame {
 
 std::unordered_map<uint32_t, Frame> jitter_buffer;
 std::mutex buffer_mutex;
+
+// Periodic Heartbeat Thread to force the Relay to stream downstream
+void heartbeat_loop(int in_fd) {
+    struct sockaddr_in relay_feedback_addr{};
+    relay_feedback_addr.sin_family = AF_INET;
+    relay_feedback_addr.sin_port = htons(47003); // Relay feedback/control port
+    relay_feedback_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+    char heartbeat_payload[4] = {'p', 'i', 'n', 'g'};
+    
+    // Send a keep-alive/registration ping every 20ms to keep the relay forwarding
+    while (true) {
+        sendto(in_fd, heartbeat_payload, sizeof(heartbeat_payload), 0, 
+               (struct sockaddr *)&relay_feedback_addr, sizeof(relay_feedback_addr));
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+}
 
 // Packet Receiver Loop (Ingest Thread)
 void receiver_loop(int in_fd) {
@@ -70,7 +87,9 @@ void playout_loop(int out_fd, struct sockaddr_in player_addr) {
         )
     );
     
-    auto start_playout = t0_system + std::chrono::milliseconds(DELAY_MS);
+    // Add 15ms safety margin on top of DELAY_MS to absorb network jitter
+    int safety_margin = 15;
+    auto start_playout = t0_system + std::chrono::milliseconds(DELAY_MS + safety_margin);
 
     // Synchronize playout start
     std::this_thread::sleep_until(start_playout);
@@ -114,29 +133,31 @@ int main() {
     if (const char* env_dur = std::getenv("DURATION_S")) DURATION_S = std::atoi(env_dur);
     if (const char* env_del = std::getenv("DELAY_MS")) DELAY_MS = std::atoi(env_del);
 
-    // Sockets setup
+    // 1. Sockets setup (Receiving incoming packets from Relay)
     int in_fd = socket(AF_INET, SOCK_DGRAM, 0);
     struct sockaddr_in in_addr{};
     in_addr.sin_family = AF_INET;
     in_addr.sin_port = htons(47002);
-    // Use INADDR_ANY to ensure WSL binds correctly across interfaces
     in_addr.sin_addr.s_addr = htonl(INADDR_ANY); 
     if (bind(in_fd, (struct sockaddr *)&in_addr, sizeof(in_addr)) < 0) {
         perror("bind 47002");
         return 1;
     }
 
+    // 2. Playback Output setup
     int out_fd = socket(AF_INET, SOCK_DGRAM, 0);
     struct sockaddr_in player_addr{};
     player_addr.sin_family = AF_INET;
     player_addr.sin_port = htons(47020);
     player_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
-    // Spawn Threads
+    // Spawn Threads (Now including our periodic keep-alive heartbeat thread)
     std::thread rx_thread(receiver_loop, in_fd);
+    std::thread hb_thread(heartbeat_loop, in_fd);
     std::thread tx_thread(playout_loop, out_fd, player_addr);
 
     rx_thread.join();
+    hb_thread.join();
     tx_thread.join();
 
     return 0;
